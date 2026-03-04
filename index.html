@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CyberFilter | Standalone System</title>
+    
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --neon-green: #00ff88;
+            --neon-blue: #00f2ff;
+            --neon-red: #ff3c3c;
+            --bg-color: #0a0a0a;
+            --text-color: #ffffff;
+        }
+
+        * { box-sizing: border-box; }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Space Mono', monospace;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        #main {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            background: #000;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        .scanlines {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%);
+            background-size: 100% 4px;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0.5;
+        }
+
+        #hud {
+            position: absolute;
+            top: 24px;
+            right: 24px;
+            z-index: 20;
+            text-align: right;
+            text-shadow: 0 0 5px rgba(0, 255, 136, 0.3);
+            display: none;
+        }
+
+        .hud-line {
+            margin-bottom: 8px;
+            font-size: 14px;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        #filter-name {
+            color: var(--neon-blue);
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .status-indicator {
+            width: 100px;
+            height: 4px;
+            background-color: #333;
+            position: relative;
+        }
+
+        .status-bar {
+            width: 0%;
+            height: 100%;
+            background-color: var(--neon-red);
+            transition: width 0.3s;
+        }
+
+        .status-active .status-bar {
+            width: 100%;
+            background-color: var(--neon-green);
+        }
+
+        #onboarding {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(10, 10, 10, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 30;
+            text-align: center;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 3rem;
+            margin: 0 0 10px 0;
+            letter-spacing: 4px;
+            color: var(--neon-green);
+        }
+
+        button {
+            background: transparent;
+            color: var(--neon-green);
+            border: 2px solid var(--neon-green);
+            padding: 16px 32px;
+            font-family: inherit;
+            font-size: 1.1rem;
+            cursor: pointer;
+            letter-spacing: 2px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background: var(--neon-green);
+            color: black;
+        }
+
+        #error-msg {
+            color: var(--neon-red);
+            margin-top: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="onboarding">
+        <h1>CYBERFILTER</h1>
+        <p style="color: #aaa; margin-bottom: 40px;">Pinch fingers to cycle neural filters.</p>
+        <button id="start-btn">BOOT SYSTEM</button>
+        <div id="error-msg"></div>
+    </div>
+
+    <div id="hud">
+        <div class="hud-line">
+            <span class="hud-label">NEURAL LINK</span>
+            <span id="filter-name">NORMAL</span>
+        </div>
+        <div class="hud-line">
+            <span id="status-text">SCANNING...</span>
+            <div id="status-dot" class="status-indicator"><div class="status-bar" id="status-bar"></div></div>
+        </div>
+    </div>
+
+    <div class="scanlines"></div>
+    <video id="video" playsinline autoplay hidden></video>
+    <canvas id="main"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('main');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('start-btn');
+        const onboarding = document.getElementById('onboarding');
+        const filterNameEl = document.getElementById('filter-name');
+        const statusTextEl = document.getElementById('status-text');
+        const statusDotEl = document.getElementById('status-dot');
+
+        const filters = ["Normal", "Thermal", "Neon Edge", "Data Stream", "Glitched"];
+        let filterIndex = 0;
+        let isPinched = false;
+        
+        let latestFaces = [];
+        let latestHands = [];
+
+        startBtn.addEventListener('click', async () => {
+            startBtn.disabled = true;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user', width: 640, height: 480 } 
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    onboarding.style.display = 'none';
+                    document.getElementById('hud').style.display = 'block';
+                    initAI();
+                };
+            } catch (err) {
+                document.getElementById('error-msg').innerText = "Camera Access Denied or No HTTPS.";
+                document.getElementById('error-msg').style.display = 'block';
+            }
+        });
+
+        function initAI() {
+            const hands = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6 });
+            hands.onResults(results => { latestHands = results.multiHandLandmarks || []; });
+
+            const faceDetection = new window.FaceDetection({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`});
+            faceDetection.setOptions({ model: 'short', minDetectionConfidence: 0.5 });
+            faceDetection.onResults(results => { latestFaces = results.detections || []; });
+
+            async function detectionLoop() {
+                if (!video.paused) {
+                    try {
+                        await hands.send({image: video});
+                        await faceDetection.send({image: video});
+                    } catch(e) {}
+                }
+                setTimeout(detectionLoop, 30);
+            }
+            
+            detectionLoop();
+            renderLoop();
+        }
+
+        function applyThermal(imageData) {
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                const avg = (data[i] + data[i+1] + data[i+2]) / 3;
+                data[i] = avg > 128 ? 255 : avg * 2;
+                data[i+1] = avg;
+                data[i+2] = 255 - avg;
+            }
+            return imageData;
+        }
+
+        function renderLoop() {
+            ctx.save();
+            ctx.scale(-1, 1);
+            ctx.translate(-canvas.width, 0);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const filter = filters[filterIndex];
+            if (filter !== "Normal") {
+                let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                if (filter === "Thermal") {
+                    imgData = applyThermal(imgData);
+                    ctx.putImageData(imgData, 0, 0);
+                } else if (filter === "Neon Edge") {
+                    ctx.globalCompositeOperation = 'difference';
+                    ctx.drawImage(video, 2, 2, canvas.width, canvas.height);
+                    ctx.globalCompositeOperation = 'source-over';
+                } else if (filter === "Data Stream") {
+                    ctx.fillStyle = "rgba(0, 20, 0, 0.4)";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.filter = "contrast(150%) grayscale(100%) brightness(80%)";
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    ctx.filter = "none";
+                } else if (filter === "Glitched") {
+                    const offset = Math.random() * 15;
+                    ctx.drawImage(video, offset, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = "rgba(255, 0, 0, 0.05)";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+            }
+            
+            if (latestHands.length > 0) {
+                for (const landmarks of latestHands) {
+                    window.drawConnectors(ctx, landmarks, window.HAND_CONNECTIONS, {color: '#00ff88', lineWidth: 4});
+                    window.drawLandmarks(ctx, landmarks, {color: '#ffffff', radius: 2});
+                    
+                    const dist = Math.hypot(landmarks[4].x - landmarks[8].x, landmarks[4].y - landmarks[8].y);
+                    if (dist < 0.05 && !isPinched) {
+                        isPinched = true;
+                        filterIndex = (filterIndex + 1) % filters.length;
+                        filterNameEl.innerText = filters[filterIndex];
+                    } else if (dist > 0.08) {
+                        isPinched = false;
+                    }
+                }
+            }
+            ctx.restore();
+
+            if (latestFaces.length > 0) {
+                const face = latestFaces[0].boundingBox;
+                const fx = (1 - (face.xMin + face.width / 2)) * canvas.width;
+                const fy = (face.yMin + face.height / 2) * canvas.height;
+                const fw = face.width * canvas.width;
+                ctx.strokeStyle = "var(--neon-green)";
+                ctx.lineWidth = 2;
+                const bSize = fw * 0.6;
+                ctx.beginPath();
+                ctx.moveTo(fx - bSize, fy - bSize); ctx.lineTo(fx - bSize + 20, fy - bSize);
+                ctx.moveTo(fx - bSize, fy - bSize); ctx.lineTo(fx - bSize, fy - bSize + 20);
+                ctx.moveTo(fx + bSize, fy - bSize); ctx.lineTo(fx + bSize - 20, fy - bSize);
+                ctx.moveTo(fx + bSize, fy - bSize); ctx.lineTo(fx + bSize, fy - bSize + 20);
+                ctx.moveTo(fx - bSize, fy + bSize); ctx.lineTo(fx - bSize + 20, fy + bSize);
+                ctx.moveTo(fx - bSize, fy + bSize); ctx.lineTo(fx - bSize, fy + bSize - 20);
+                ctx.moveTo(fx + bSize, fy + bSize); ctx.lineTo(fx + bSize - 20, fy + bSize);
+                ctx.moveTo(fx + bSize, fy + bSize); ctx.lineTo(fx + bSize, fy + bSize - 20);
+                ctx.stroke();
+                statusTextEl.innerText = "FACE TARGETED";
+                statusDotEl.classList.add('status-active');
+            } else {
+                statusTextEl.innerText = "LINK SEARCHING";
+                statusDotEl.classList.remove('status-active');
+            }
+            requestAnimationFrame(renderLoop);
+        }
+    </script>
+</body>
+</html>
